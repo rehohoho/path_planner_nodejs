@@ -55,7 +55,7 @@ class App extends React.Component {
 
   async componentDidMount() {
     // Get the model
-    this.model = await tf.loadGraphModel(`http://127.0.0.1:81/model.json`);
+    this.model = await tf.loadGraphModel(`http://127.0.0.1:81/scooter/model.json`);
     this.setState({ loadingModel: false });
   }
 
