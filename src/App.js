@@ -149,8 +149,8 @@ class App extends React.Component {
           </button>
         )} */}
         {/* <WebcamStream></WebcamStream> */}
-        <CanvasVideo options={{ autoplay: true, width: 513, height: 513 }} segment={true}/>
-        <CanvasVideo options={{ autoplay: true, width: 513, height: 513 }} segment={false}/>
+        <CanvasVideo options={{ autoplay: true, width: 1280, height: 960 }} segment={true}/>
+        {/* <CanvasVideo options={{ autoplay: true, width: 513, height: 513 }} segment={false}/> */}
       </div>
     );
   }

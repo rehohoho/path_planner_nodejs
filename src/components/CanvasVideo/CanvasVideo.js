@@ -153,10 +153,11 @@ class CanvasVideo extends Component {
   }
 
   startPlayingInCanvas = (video, canvasRef, { ratio, autoplay }) => {
+    const context = canvasRef.getContext('2d');
     canvasRef.width = this.props.options.width;
     canvasRef.height = this.props.options.height;
     this.playListener = () => {
-      this.draw(video, canvasRef);
+      this.draw(video, context);
     };
     video.addEventListener('play', this.playListener, false);
     if (autoplay) setTimeout(() => video.play(), 2000);
@@ -174,22 +175,43 @@ class CanvasVideo extends Component {
     return video;
   };
 
-  draw = async (video, canvasRef) => {
+  draw = async (video, context) => {
     
-    if(this.props.segment) {      
-      console.time('Predict');
-      const seg_map = this.predictImage(video);
-      seg_map.dispose();
-      // tf.browser.toPixels(seg_map, canvasRef).then(() =>{
-      //   seg_map.dispose();
-      // });
-      console.timeEnd('Predict');
-    } else {
-      canvasRef.getContext('2d').drawImage(video, 0, 0);
+    // if(this.props.segment) {      
+    //   console.time('Predict');
+    //   const seg_map = this.predictImage(video);
+    //   seg_map.dispose();
+    //   // tf.browser.toPixels(seg_map, canvasRef).then(() =>{
+    //   //   seg_map.dispose();
+    //   // });
+    //   console.timeEnd('Predict');
+    // } else {
+    //   canvasRef.getContext('2d').drawImage(video, 0, 0);
+    // }
+    
+    const coords = await this.predictImage(video).data();
+    context.drawImage(video, 0, 0);
+
+    context.beginPath();
+    context.strokeStyle = '#ff0000';
+    context.lineWidth = 5;
+    
+    console.log(coords);
+
+    var i = 0;
+    while (coords[i] == 1) {
+      i++;
     }
+    context.moveTo(coords[i], coords[i+5]);
+    while (i < 4) {
+      context.lineTo(coords[i+1], coords[i+6]);
+      i++;
+    }
+    // context.lineTo(1280/2, 960);
+    context.stroke();
     
     if (!video.paused && !video.ended) {
-      setTimeout(this.draw, 1000 / 24, video, canvasRef);
+      setTimeout(this.draw, 1000 / 24, video, context);
     }
   };
 
