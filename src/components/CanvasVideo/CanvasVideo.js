@@ -9,7 +9,7 @@ class CanvasVideo extends Component {
     super(props);
     this.state = {
       loadingModel: true,
-      colors: [
+      color_map: tf.tensor([
         [128, 64, 128],
         [244, 35, 232],
         [70, 70, 70],
@@ -29,7 +29,7 @@ class CanvasVideo extends Component {
         [0, 80, 100],
         [0, 0, 230],
         [119, 11, 32]
-      ]
+      ]).asType('int32')
     };
   }
 
@@ -48,46 +48,62 @@ class CanvasVideo extends Component {
     return tf.transpose(tfimg, [2, 0, 1]);
   };
 
-  predictImage = async video => {
+  predictImage = video => {
     // Get the image as a tensor
-    let tfroadImage = tf.browser.fromPixels(video);
-    tfroadImage = tf.image.resizeBilinear(tfroadImage, [513, 513]);
-    tfroadImage = tf.reverse(tfroadImage, -1);
-    tfroadImage = this.processImage(tfroadImage);
-    tfroadImage.array().then(data => {});
-    const resized = tf.cast(tfroadImage, 'float32');
-    const roadPixels = tf.tensor4d(Array.from(await resized.data()), [1,3,513,513]);
+    const tfroadImage = tf.browser.fromPixels(video);
+    
+    const seg_map = tf.tidy(() => {
+      const resized = tfroadImage.asType('float32')
+                                .resizeBilinear([513, 513])
+                                .reverse(-1);
+      const processed = this.processImage(resized)
+                            .expandDims();
+      
+      // Run the model on the tensor
+      // No finding of main road, assumes segmentation is ok already
+      const mask = this.model.predict(processed)
+                               .squeeze()
+                               .argMax()
+      
+      // Sets all non-pavement to 0
+      const ridable_comparison_mask = tf.onesLike(mask)
+      const ridable_area_mask = mask.clipByValue(0, 2)
+                               .asType('int32')
+                               .mul(
+                                 tf.equal(mask, ridable_comparison_mask)
+                               )
 
-    // Run the model on the tensor
-    let predictions = tf
-      .tensor1d(await this.model.predict(roadPixels).data())
-      .reshape([19, 513, 513])
-      .argMax();
+      const cropped_mask = ridable_area_mask.slice([112, 0], [400, 513])
+      const slices = tf.split(cropped_mask, 5, 0)
+      
+      const seg_map = this.state.color_map.gather(slices[4]);
 
-    roadPixels.dispose();
+      return seg_map;
 
-    predictions.array().then(data => {});
+      // let x = [];
+      // let y = [];
 
-    // Convert tensor to array and assign color to each pixel
-    const segMap = Array.from(await predictions.data());
-    const segMapColor = segMap.map(seg => this.state.colors[seg]);
+      // for (const mask_slice in slices){
+      //   const normalise = tf.add(mask_slice)
+      //   const mid_y = tf.add(tf.div(tf.mul(mask_slice, this.state.height_idx),normalise))
+      //   const mid_x = tf.add(tf.div(tf.mul(mask_slice, this.state.width_idx),normalise))
 
-    predictions.dispose()
+      //   y.push(mid_y);
+      //   x.push(mid_x);
+      // }
 
-    // Convert array to data for image
-    let data = [];
-    for (var i = 0; i < segMapColor.length; i++) {
-      data.push(segMapColor[i][0]); // red
-      data.push(segMapColor[i][1]); // green
-      data.push(segMapColor[i][2]); // blue
-      data.push(255); // alpha
-    }
+      // y = tf.tensor1d(y);
+      // x = tf.tensor1d(x);
+    })
+    
+    // Tensor memory cleanup
+    tfroadImage.dispose();
+    
+    // For testing
+    // let sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+    // await sleep(10000);
 
-    // Create ImageData
-    let imageData = new ImageData(513, 513);
-    imageData.data.set(data);
-
-    return imageData;
+    return seg_map;
   };
 
   componentWillMount() {
@@ -95,7 +111,7 @@ class CanvasVideo extends Component {
   }
 
   componentDidMount = async () => {
-    this.model = await tf.loadGraphModel(`http://127.0.0.1:81/model.json`);
+    this.model = await tf.loadGraphModel(`http://127.0.0.1:81/scooter/model.json`);
     this.setState({ loadingModel: false });
 
     this.startPlayingInCanvas(this.virtualVideoElement, this.canvasRef, {
@@ -116,11 +132,10 @@ class CanvasVideo extends Component {
   }
 
   startPlayingInCanvas = (video, canvasRef, { ratio, autoplay }) => {
-    const context = canvasRef.getContext('2d');
     canvasRef.width = this.props.options.width;
     canvasRef.height = this.props.options.height;
     this.playListener = () => {
-      this.draw(video, context, canvasRef.width, canvasRef.height);
+      this.draw(video, canvasRef);
     };
     video.addEventListener('play', this.playListener, false);
     if (autoplay) setTimeout(() => video.play(), 2000);
@@ -130,27 +145,29 @@ class CanvasVideo extends Component {
     const video = document.createElement('video');
     video.setAttribute('width', this.props.options.width);
     video.setAttribute('height', this.props.options.height);
-    // video.setAttribute("src", require("../../assets/video.mp4"))
+    video.setAttribute("src", require("../../assets/whizz_video.mp4"))
     // Getting the video which has to be converted
-    navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
-      video.srcObject = stream;
-    });
+    // navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+    //   video.srcObject = stream;
+    // });
     return video;
   };
 
-  draw = async (video, context) => {
+  draw = async (video, canvasRef) => {
     
-    if(this.props.segment) {
-      console.time('predict');
-      const processed = await this.predictImage(video);
-      console.timeEnd('predict');
-      context.putImageData(processed, 0, 0);
+    if(this.props.segment) {      
+      console.time('Predict');
+      const seg_map = this.predictImage(video);
+      tf.browser.toPixels(seg_map, canvasRef).then(() =>{
+        seg_map.dispose();
+      });
+      console.timeEnd('Predict');
     } else {
-      context.drawImage(video, 0, 0)
+      canvasRef.getContext('2d').drawImage(video, 0, 0);
     }
     
     if (!video.paused && !video.ended) {
-      setTimeout(this.draw, 1000 / 24, video, context);
+      setTimeout(this.draw, 1000 / 24, video, canvasRef);
     }
   };
 
