@@ -30,6 +30,8 @@ class CanvasVideo extends Component {
         [0, 0, 230],
         [119, 11, 32]
       ]).asType('int32')
+      // slice_height_range: tf.expandDims(tf.range(0, 80), 1), // 80 = slice height
+      // slice_width_range: tf.range(0, 513)                     // 513 = slice width
     };
   }
 
@@ -52,49 +54,68 @@ class CanvasVideo extends Component {
     // Get the image as a tensor
     const tfroadImage = tf.browser.fromPixels(video);
     
-    const seg_map = tf.tidy(() => {
+    const mask = tf.tidy(() => {
       const resized = tfroadImage.asType('float32')
                                 .resizeBilinear([513, 513])
                                 .reverse(-1);
       const processed = this.processImage(resized)
                             .expandDims();
-      
       // Run the model on the tensor
       // No finding of main road, assumes segmentation is ok already
       const mask = this.model.predict(processed)
                                .squeeze()
                                .argMax()
-      
-      // Sets all non-pavement to 0
-      const ridable_comparison_mask = tf.onesLike(mask)
-      const ridable_area_mask = mask.clipByValue(0, 2)
-                               .asType('int32')
-                               .mul(
-                                 tf.equal(mask, ridable_comparison_mask)
-                               )
-
-      const cropped_mask = ridable_area_mask.slice([112, 0], [400, 513])
-      const slices = tf.split(cropped_mask, 5, 0)
-      
-      const seg_map = this.state.color_map.gather(slices[4]);
-
-      return seg_map;
-
-      // let x = [];
-      // let y = [];
-
-      // for (const mask_slice in slices){
-      //   const normalise = tf.add(mask_slice)
-      //   const mid_y = tf.add(tf.div(tf.mul(mask_slice, this.state.height_idx),normalise))
-      //   const mid_x = tf.add(tf.div(tf.mul(mask_slice, this.state.width_idx),normalise))
-
-      //   y.push(mid_y);
-      //   x.push(mid_x);
-      // }
-
-      // y = tf.tensor1d(y);
-      // x = tf.tensor1d(x);
+      return mask;
     })
+
+    const slices = tf.tidy(() => {
+      // Sets all non-pavement to 0
+      const ridable_area_mask = mask.mul(
+                                  tf.equal(mask, tf.onesLike(mask))
+                                ).asType("float32")
+                                .slice([112, 0], [400, 513]);
+      const slices = tf.stack(
+                        tf.split(ridable_area_mask, 5, 0)
+                     );
+      return slices
+    })
+    
+    // let x = [];
+    // let y = [];
+    // let rolling_height_idx = 0;
+    
+    const coords = tf.tidy(() => {
+      const normalise = tf.sum(slices, [1,2]);
+      const height_idx = tf.range(0, 400)
+                        .reshape([5, 80])
+                        .expandDims(2);
+      const width_idx = tf.range(0, 513);
+      const mid_y = tf.div(tf.sum(tf.mul(slices, height_idx), [1,2]), normalise);
+      const mid_x = tf.div(tf.sum(tf.mul(slices, width_idx), [1,2]), normalise);
+      const coords = tf.stack([mid_x, mid_y])
+                     .asType("int32");
+
+      return(coords)
+    })
+
+    // for (const i in slices){
+    //   const mask_slice = slices[i];
+    //   const normalise = tf.sum(mask_slice);
+    //   if (normalise.notEqual(0).dataSync()[0]) {
+    //     const height_idx = this.state.slice_height_range.add(rolling_height_idx)
+    //     const mid_y = tf.sum(tf.div(tf.mul(mask_slice, height_idx), normalise))
+    //     const mid_x = tf.sum(tf.div(tf.mul(mask_slice, this.state.slice_width_range), normalise))
+    //     // y = np.sum( a* np.expand_dims(np.arange(0,len(a)), 1)) / np.sum(a)
+    //     // x = np.sum( a* np.arange(0,len(a))) / np.sum(a)
+    //     // y = tf.reduce_sum(tf.divide(tf.multiply(a, tf.expand_dims(tf.range(0, a.shape[0]), 1)), tf.reduce_sum(a)))
+    //     // x = tf.reduce_sum(tf.divide(tf.multiply(a, tf.range(0, a.shape[0])), tf.reduce_sum(a)))
+    //     y.push(mid_y.dataSync());
+    //     x.push(mid_x.dataSync());
+    //   }
+    //   rolling_height_idx += 80;
+    // }
+      
+    // const seg_map = this.state.color_map.gather(mask);
     
     // Tensor memory cleanup
     tfroadImage.dispose();
@@ -103,7 +124,7 @@ class CanvasVideo extends Component {
     // let sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
     // await sleep(10000);
 
-    return seg_map;
+    return coords;
   };
 
   componentWillMount() {
@@ -158,9 +179,10 @@ class CanvasVideo extends Component {
     if(this.props.segment) {      
       console.time('Predict');
       const seg_map = this.predictImage(video);
-      tf.browser.toPixels(seg_map, canvasRef).then(() =>{
-        seg_map.dispose();
-      });
+      seg_map.dispose();
+      // tf.browser.toPixels(seg_map, canvasRef).then(() =>{
+      //   seg_map.dispose();
+      // });
       console.timeEnd('Predict');
     } else {
       canvasRef.getContext('2d').drawImage(video, 0, 0);
