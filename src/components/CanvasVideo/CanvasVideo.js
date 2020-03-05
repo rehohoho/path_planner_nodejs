@@ -50,13 +50,12 @@ class CanvasVideo extends Component {
     return tf.transpose(tfimg, [2, 0, 1]);
   };
 
-  predictImage = video => {
+  get_mask = (video) => {
     // Get the image as a tensor
     const tfroadImage = tf.browser.fromPixels(video);
-    
+
     const mask = tf.tidy(() => {
       const resized = tfroadImage.asType('float32')
-                                .resizeBilinear([513, 513])
                                 .reverse(-1);
       const processed = this.processImage(resized)
                             .expandDims();
@@ -68,28 +67,30 @@ class CanvasVideo extends Component {
       return mask;
     })
 
-    const slices = tf.tidy(() => {
+    tfroadImage.dispose();
+    return mask;
+  }
+
+  get_waypoints = (mask, n_slices) => {
+    
+    const height = this.props.options.height;
+    const width = this.props.options.width;
+
+    const coords = tf.tidy(() => {
       // Sets all non-pavement to 0
       const ridable_area_mask = mask.mul(
                                   tf.equal(mask, tf.onesLike(mask))
-                                ).asType("float32")
-                                .slice([112, 0], [400, 513]);
+                                ).asType("float32");
       const slices = tf.stack(
-                        tf.split(ridable_area_mask, 5, 0)
+                        tf.split(ridable_area_mask, n_slices, 0)
                      );
-      return slices
-    })
-    
-    // let x = [];
-    // let y = [];
-    // let rolling_height_idx = 0;
-    
-    const coords = tf.tidy(() => {
+      
+      // Get waypoints
       const normalise = tf.sum(slices, [1,2]);
-      const height_idx = tf.range(0, 400)
-                        .reshape([5, 80])
+      const height_idx = tf.range(0, height)
+                        .reshape([n_slices, height/n_slices])
                         .expandDims(2);
-      const width_idx = tf.range(0, 513);
+      const width_idx = tf.range(0, width);
       const mid_y = tf.div(tf.sum(tf.mul(slices, height_idx), [1,2]), normalise);
       const mid_x = tf.div(tf.sum(tf.mul(slices, width_idx), [1,2]), normalise);
       const coords = tf.stack([mid_x, mid_y])
@@ -97,6 +98,10 @@ class CanvasVideo extends Component {
 
       return(coords)
     })
+
+    // let x = [];
+    // let y = [];
+    // let rolling_height_idx = 0;
 
     // for (const i in slices){
     //   const mask_slice = slices[i];
@@ -114,11 +119,6 @@ class CanvasVideo extends Component {
     //   }
     //   rolling_height_idx += 80;
     // }
-      
-    // const seg_map = this.state.color_map.gather(mask);
-    
-    // Tensor memory cleanup
-    tfroadImage.dispose();
     
     // For testing
     // let sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -153,11 +153,11 @@ class CanvasVideo extends Component {
   }
 
   startPlayingInCanvas = (video, canvasRef, { ratio, autoplay }) => {
-    const context = canvasRef.getContext('2d');
+    // const context = canvasRef.getContext('2d');
     canvasRef.width = this.props.options.width;
     canvasRef.height = this.props.options.height;
     this.playListener = () => {
-      this.draw(video, context);
+      this.draw(video, canvasRef);
     };
     video.addEventListener('play', this.playListener, false);
     if (autoplay) setTimeout(() => video.play(), 2000);
@@ -175,11 +175,11 @@ class CanvasVideo extends Component {
     return video;
   };
 
-  draw = async (video, context) => {
+  draw = async (video, canvasRef) => {
     
     // if(this.props.segment) {      
     //   console.time('Predict');
-    //   const seg_map = this.predictImage(video);
+    //   const seg_map = this.get_mask(video);
     //   seg_map.dispose();
     //   // tf.browser.toPixels(seg_map, canvasRef).then(() =>{
     //   //   seg_map.dispose();
@@ -189,9 +189,13 @@ class CanvasVideo extends Component {
     //   canvasRef.getContext('2d').drawImage(video, 0, 0);
     // }
     
-    const coords = await this.predictImage(video).data();
-    context.drawImage(video, 0, 0);
+    const n_slices = 20;
+    const mask = this.get_mask(video);
+    const coords = this.get_waypoints(mask, n_slices);
+    await tf.browser.toPixels(this.state.color_map.gather(mask), canvasRef)
+    // context.drawImage(video, 0, 0);
 
+    const context = canvasRef.getContext('2d');
     context.beginPath();
     context.strokeStyle = '#ff0000';
     context.lineWidth = 5;
@@ -202,16 +206,19 @@ class CanvasVideo extends Component {
     while (coords[i] == 1) {
       i++;
     }
-    context.moveTo(coords[i], coords[i+5]);
-    while (i < 4) {
-      context.lineTo(coords[i+1], coords[i+6]);
+    context.moveTo(coords[i], coords[i+n_slices]);
+
+    while (i < n_slices - 1) {
+      if (coords[i+1] != 1) {
+        context.lineTo(coords[i+1], coords[i+n_slices+1]);
+      }
       i++;
     }
-    // context.lineTo(1280/2, 960);
+    context.lineTo(this.props.options.width/2, this.props.options.height);
     context.stroke();
     
     if (!video.paused && !video.ended) {
-      setTimeout(this.draw, 1000 / 24, video, context);
+      setTimeout(this.draw, 1000 / 24, video, canvasRef);
     }
   };
 
