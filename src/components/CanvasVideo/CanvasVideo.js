@@ -49,8 +49,8 @@ class CanvasVideo extends Component {
 
   initialise_tf_constants = (width, height) => {
     
-    var top_crop = this.state.crop_upper_limit * height;
-    var bottom_crop = this.state.crop_lower_limit * height - (this.state.crop_lower_limit-this.state.crop_upper_limit) * height % this.state.n_slices;
+    var top_crop = Math.floor(this.state.crop_upper_limit * height);
+    var bottom_crop = this.state.crop_lower_limit * height - (this.state.crop_lower_limit*height - top_crop) % this.state.n_slices;
     var crop_height = bottom_crop - top_crop;
 
     this.frame_constants = {
@@ -59,9 +59,11 @@ class CanvasVideo extends Component {
       top_crop    : top_crop,
       bottom_crop : bottom_crop,
       crop_height : crop_height,
-      height_idx  : ( tf.range(top_crop, bottom_crop)
-                    .reshape([this.state.n_slices, crop_height/this.state.n_slices])
-                    .expandDims(2) ),
+      height_idx  : tf.tidy(() => {return(
+                      tf.range(top_crop, bottom_crop)
+                      .reshape([this.state.n_slices, crop_height/this.state.n_slices])
+                      .expandDims(2)
+                    )}),
       width_idx   : tf.range(0, width),
       min_ridable_area : crop_height/this.state.n_slices * width * this.state.min_ridable_area
     }
@@ -70,7 +72,7 @@ class CanvasVideo extends Component {
   processImage = tfimg => {
     
     tfimg = tf.tidy(() => {
-      return tfimg.sub(this.state.preprocess_mean).div(this.mean.preprocess_std);
+      return tfimg.sub(this.state.preprocess_mean).div(this.state.preprocess_std);
     });
 
     return tf.transpose(tfimg, [2, 0, 1]);
@@ -82,6 +84,7 @@ class CanvasVideo extends Component {
 
     const mask = tf.tidy(() => {
       const resized = tfroadImage.asType('float32')
+                                // .resizeBilinear([513,513])
                                 .reverse(-1);
       const processed = this.processImage(resized)
                             .expandDims();
@@ -108,7 +111,6 @@ class CanvasVideo extends Component {
                             this.frame_constants.crop_height/this.state.n_slices, 
                             this.props.options.width])
 
-      
       // Get waypoints
       const normalise = tf.sum(slices, [1,2]);
       const path_exist_bin_mask = tf.greater(normalise, this.frame_constants.min_ridable_area);
@@ -218,32 +220,23 @@ class CanvasVideo extends Component {
 
   draw = async (video, canvasRef) => {
     
-    // if(this.props.segment) {      
-    //   console.time('Predict');
-    //   const seg_map = this.get_mask(video);
-    //   seg_map.dispose();
-    //   // tf.browser.toPixels(seg_map, canvasRef).then(() =>{
-    //   //   seg_map.dispose();
-    //   // });
-    //   console.timeEnd('Predict');
-    // } else {
-    //   canvasRef.getContext('2d').drawImage(video, 0, 0);
-    // }
-    console.time('Predict');
-    const mask = await this.get_mask(video);
-    // const coords = await this.get_waypoints_and_bestfit(mask).data();
-    // await tf.browser.toPixels(this.state.color_map.gather(mask), canvasRef)
-    console.timeEnd('Predict');
-    console.log(performance.now(), tf.memory());
-    // console.log(tf.ENV.backend.NUM_BYTES_BEFORE_PAGING);
+    const mask = this.get_mask(video);
+    const coords = await this.get_waypoints_and_bestfit(mask).data();
+    // await tf.browser.toPixels(this.state.color_map.gather(mask), canvasRef)  // Uncomment to log output seg image
+    
+    // console.log(performance.now(), tf.memory());  // Uncomment to log tf memory usage
     
     const context = canvasRef.getContext('2d');
-    
+    const grad = coords[this.state.n_slices + this.state.n_slices];
+
     context.drawImage(video, 0, 0);
-    // if (coords.reduce((a, b) => a + b, 0) !== 1) {
-    //   this.draw_waypoints(coords, context);
-    //   this.draw_bestfit(coords[this.state.n_slices + this.state.n_slices], context);
-    // }
+    if (coords.reduce((a, b) => a + b, 0) !== 1) {  // check if no waypoints are found (not enough ridable area)
+      this.draw_waypoints(coords, context);
+      this.draw_bestfit(grad, context);
+      console.log('Suggested steer (degs to vertical): ', -Math.atan(grad) * 180 / Math.PI);
+    } else {
+      console.log('No waypoints detected. No steer output.')
+    }
     
     // dispose tensors
     mask.dispose();
