@@ -29,10 +29,32 @@ class CanvasVideo extends Component {
         [0, 80, 100],
         [0, 0, 230],
         [119, 11, 32]
-      ]).asType('int32')
-      // slice_height_range: tf.expandDims(tf.range(0, 80), 1), // 80 = slice height
-      // slice_width_range: tf.range(0, 513)                     // 513 = slice width
+      ]).asType('int32'),
+      crop_upper_limit: 0.25,
+      crop_lower_limit: 0.9,
+      min_ridable_area: 0.1,
+      n_slices: 20
     };
+  }
+
+  initialise_tf_constants = (width, height) => {
+    
+    var top_crop = this.state.crop_upper_limit * height;
+    var bottom_crop = this.state.crop_lower_limit * height - (this.state.crop_lower_limit-this.state.crop_upper_limit) * height % this.state.n_slices;
+    var crop_height = bottom_crop - top_crop;
+
+    this.frame_constants = {
+      x_offset    : tf.scalar(width/2),
+      y_offset    : tf.scalar(height - 1),
+      top_crop    : top_crop,
+      bottom_crop : bottom_crop,
+      crop_height : crop_height,
+      height_idx  : ( tf.range(top_crop, bottom_crop)
+                    .reshape([this.state.n_slices, crop_height/this.state.n_slices])
+                    .expandDims(2) ),
+      width_idx   : tf.range(0, width),
+      min_ridable_area : crop_height/this.state.n_slices * width * this.state.min_ridable_area
+    }
   }
 
   processImage = tfimg => {
@@ -71,58 +93,42 @@ class CanvasVideo extends Component {
     return mask;
   }
 
-  get_waypoints = (mask, n_slices) => {
+  get_waypoints_and_bestfit = (mask) => {
     
-    const height = this.props.options.height;
-    const width = this.props.options.width;
-
     const coords = tf.tidy(() => {
       // Sets all non-pavement to 0
-      const ridable_area_mask = mask.mul(
-                                  tf.equal(mask, tf.onesLike(mask))
-                                ).asType("float32");
-      const slices = tf.stack(
-                        tf.split(ridable_area_mask, n_slices, 0)
-                     );
+      const slices = mask.mul(
+                            tf.equal(mask, tf.onesLike(mask))
+                          ).slice([this.frame_constants.top_crop, 0], [this.frame_constants.crop_height, this.props.options.width])
+                          .reshape([this.state.n_slices, 
+                            this.frame_constants.crop_height/this.state.n_slices, 
+                            this.props.options.width])
+
       
       // Get waypoints
       const normalise = tf.sum(slices, [1,2]);
-      const height_idx = tf.range(0, height)
-                        .reshape([n_slices, height/n_slices])
-                        .expandDims(2);
-      const width_idx = tf.range(0, width);
-      const mid_y = tf.div(tf.sum(tf.mul(slices, height_idx), [1,2]), normalise);
-      const mid_x = tf.div(tf.sum(tf.mul(slices, width_idx), [1,2]), normalise);
-      const coords = tf.stack([mid_x, mid_y])
-                     .asType("int32");
-
-      return(coords)
+      const path_exist_bin_mask = tf.greater(normalise, this.frame_constants.min_ridable_area);
+      
+      const mid_y = tf.mul(slices, this.frame_constants.height_idx)
+                      .sum([1,2])
+                      .div(normalise)
+                      .mul(path_exist_bin_mask);
+      const mid_x = tf.mul(slices, this.frame_constants.width_idx)
+                      .sum([1,2])
+                      .div(normalise)
+                      .mul(path_exist_bin_mask);
+      
+      // Get best fit through origin, OLS: xy/yy
+      const trans_x = mid_x.sub( this.frame_constants.x_offset );
+      const trans_y = mid_y.sub( this.frame_constants.y_offset );
+      const xy      = tf.mul(trans_x, trans_y).mul(path_exist_bin_mask).sum();
+      const yy      = tf.mul(trans_y, trans_y).mul(path_exist_bin_mask).sum();
+      const best_fit = tf.div(xy, yy).expandDims();
+      
+      const coords = tf.concat([mid_x, mid_y, best_fit]);
+      
+      return coords;
     })
-
-    // let x = [];
-    // let y = [];
-    // let rolling_height_idx = 0;
-
-    // for (const i in slices){
-    //   const mask_slice = slices[i];
-    //   const normalise = tf.sum(mask_slice);
-    //   if (normalise.notEqual(0).dataSync()[0]) {
-    //     const height_idx = this.state.slice_height_range.add(rolling_height_idx)
-    //     const mid_y = tf.sum(tf.div(tf.mul(mask_slice, height_idx), normalise))
-    //     const mid_x = tf.sum(tf.div(tf.mul(mask_slice, this.state.slice_width_range), normalise))
-    //     // y = np.sum( a* np.expand_dims(np.arange(0,len(a)), 1)) / np.sum(a)
-    //     // x = np.sum( a* np.arange(0,len(a))) / np.sum(a)
-    //     // y = tf.reduce_sum(tf.divide(tf.multiply(a, tf.expand_dims(tf.range(0, a.shape[0]), 1)), tf.reduce_sum(a)))
-    //     // x = tf.reduce_sum(tf.divide(tf.multiply(a, tf.range(0, a.shape[0])), tf.reduce_sum(a)))
-    //     y.push(mid_y.dataSync());
-    //     x.push(mid_x.dataSync());
-    //   }
-    //   rolling_height_idx += 80;
-    // }
-    
-    // For testing
-    // let sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
-    // await sleep(10000);
 
     return coords;
   };
@@ -153,9 +159,9 @@ class CanvasVideo extends Component {
   }
 
   startPlayingInCanvas = (video, canvasRef, { ratio, autoplay }) => {
-    // const context = canvasRef.getContext('2d');
     canvasRef.width = this.props.options.width;
     canvasRef.height = this.props.options.height;
+    this.initialise_tf_constants(canvasRef.width, canvasRef.height)
     this.playListener = () => {
       this.draw(video, canvasRef);
     };
@@ -175,6 +181,37 @@ class CanvasVideo extends Component {
     return video;
   };
 
+  draw_waypoints = (coords, context) => {
+    context.strokeStyle = '#ff0000';
+
+    context.beginPath();
+    var i = 0;
+    while (coords[i] <= 1) {
+      i++;
+    }
+    context.moveTo(coords[i], coords[i+this.state.n_slices]);
+
+    while (i < this.state.n_slices - 1) {
+      if (coords[i+1] > 1) {
+        context.lineTo(coords[i+1], coords[i+this.state.n_slices+1]);
+      }
+      i++;
+    }
+    context.stroke();
+  }
+
+  draw_bestfit = (grad, context) => {
+
+    var height = this.props.options.height;
+    var width = this.props.options.width;
+
+    context.strokeStyle = '#0000ff';
+    context.beginPath();
+    context.moveTo(width/2, height);
+    context.lineTo(grad*(-height+1) + width/2, 0)
+    context.stroke();
+  }
+
   draw = async (video, canvasRef) => {
     
     // if(this.props.segment) {      
@@ -188,35 +225,25 @@ class CanvasVideo extends Component {
     // } else {
     //   canvasRef.getContext('2d').drawImage(video, 0, 0);
     // }
-    
-    const n_slices = 20;
+    console.time('Predict');
     const mask = this.get_mask(video);
-    const coords = this.get_waypoints(mask, n_slices);
-    await tf.browser.toPixels(this.state.color_map.gather(mask), canvasRef)
-    // context.drawImage(video, 0, 0);
+    console.timeEnd('Predict');
+    console.time('Drawing');
+    const coords = await this.get_waypoints_and_bestfit(mask).data();
+    // await tf.browser.toPixels(this.state.color_map.gather(mask), canvasRef)
+    console.timeEnd('Drawing');
 
     const context = canvasRef.getContext('2d');
-    context.beginPath();
-    context.strokeStyle = '#ff0000';
-    context.lineWidth = 5;
     
-    console.log(coords);
-
-    var i = 0;
-    while (coords[i] == 1) {
-      i++;
+    context.drawImage(video, 0, 0);
+    if (coords.reduce((a, b) => a + b, 0) !== 1) {
+      this.draw_waypoints(coords, context);
+      this.draw_bestfit(coords[this.state.n_slices + this.state.n_slices], context);
     }
-    context.moveTo(coords[i], coords[i+n_slices]);
-
-    while (i < n_slices - 1) {
-      if (coords[i+1] != 1) {
-        context.lineTo(coords[i+1], coords[i+n_slices+1]);
-      }
-      i++;
-    }
-    context.lineTo(this.props.options.width/2, this.props.options.height);
-    context.stroke();
     
+    // dispose tensors
+    mask.dispose();
+
     if (!video.paused && !video.ended) {
       setTimeout(this.draw, 1000 / 24, video, canvasRef);
     }
