@@ -7,6 +7,14 @@ class CanvasVideo extends Component {
   constructor(props) {
     //tf.enableProdMode();
     super(props);
+
+    let value_scale = 255;
+    let mean = [0.406, 0.456, 0.485];
+    let std = [0.225, 0.224, 0.229];
+
+    mean = mean.map(mean_val => mean_val * value_scale);
+    std = std.map(std_val => std_val * value_scale);
+
     this.state = {
       loadingModel: true,
       color_map: tf.tensor([
@@ -33,7 +41,9 @@ class CanvasVideo extends Component {
       crop_upper_limit: 0.25,
       crop_lower_limit: 0.9,
       min_ridable_area: 0.1,
-      n_slices: 20
+      n_slices: 20,
+      preprocess_mean: mean,
+      preprocess_std: std
     };
   }
 
@@ -58,15 +68,9 @@ class CanvasVideo extends Component {
   }
 
   processImage = tfimg => {
-    let value_scale = 255;
-    let mean = [0.406, 0.456, 0.485];
-    let std = [0.225, 0.224, 0.229];
-
-    mean = mean.map(mean_val => mean_val * value_scale);
-    std = std.map(std_val => std_val * value_scale);
-
+    
     tfimg = tf.tidy(() => {
-      return tfimg.sub(mean).div(std);
+      return tfimg.sub(this.state.preprocess_mean).div(this.mean.preprocess_std);
     });
 
     return tf.transpose(tfimg, [2, 0, 1]);
@@ -161,7 +165,7 @@ class CanvasVideo extends Component {
   startPlayingInCanvas = (video, canvasRef, { ratio, autoplay }) => {
     canvasRef.width = this.props.options.width;
     canvasRef.height = this.props.options.height;
-    this.initialise_tf_constants(canvasRef.width, canvasRef.height)
+    this.initialise_tf_constants(canvasRef.width, canvasRef.height);
     this.playListener = () => {
       this.draw(video, canvasRef);
     };
@@ -226,20 +230,20 @@ class CanvasVideo extends Component {
     //   canvasRef.getContext('2d').drawImage(video, 0, 0);
     // }
     console.time('Predict');
-    const mask = this.get_mask(video);
-    console.timeEnd('Predict');
-    console.time('Drawing');
-    const coords = await this.get_waypoints_and_bestfit(mask).data();
+    const mask = await this.get_mask(video);
+    // const coords = await this.get_waypoints_and_bestfit(mask).data();
     // await tf.browser.toPixels(this.state.color_map.gather(mask), canvasRef)
-    console.timeEnd('Drawing');
-
+    console.timeEnd('Predict');
+    console.log(performance.now(), tf.memory());
+    // console.log(tf.ENV.backend.NUM_BYTES_BEFORE_PAGING);
+    
     const context = canvasRef.getContext('2d');
     
     context.drawImage(video, 0, 0);
-    if (coords.reduce((a, b) => a + b, 0) !== 1) {
-      this.draw_waypoints(coords, context);
-      this.draw_bestfit(coords[this.state.n_slices + this.state.n_slices], context);
-    }
+    // if (coords.reduce((a, b) => a + b, 0) !== 1) {
+    //   this.draw_waypoints(coords, context);
+    //   this.draw_bestfit(coords[this.state.n_slices + this.state.n_slices], context);
+    // }
     
     // dispose tensors
     mask.dispose();
