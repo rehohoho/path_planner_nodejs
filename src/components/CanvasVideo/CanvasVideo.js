@@ -3,6 +3,70 @@ import PropTypes from 'prop-types';
 
 import * as tf from '@tensorflow/tfjs';
 
+class pid {
+  // pid class with reference from python simple_pid library
+
+  kp = 1.0;
+  ki = 0.0;
+  kd = 0.0;
+  setpoint = 0.0;
+  upper_limit = null;
+  lower_limit = null;
+
+  constructor(kp, ki, kd, setpoint, upper_limit, lower_limit) {
+    this.kp = kp;
+    this.ki = ki;
+    this.kd = kd;
+    this.setpoint = setpoint;
+    this.upper_limit = upper_limit;
+    this.lower_limit = lower_limit;
+    
+    this.p = 0.0;
+    this.i = 0.0;
+    this.d = 0.0;
+  }
+
+  clamp = (value) => {
+    if (this.upper_limit != null && value > this.upper_limit) {
+      return this.upper_limit;
+    }
+    if (this.lower_limit != null && value < this.lower_limit) {
+      return this.lower_limit;
+    }
+    return value;
+  }
+
+  update = (feedback) => {
+    
+    let now = Date.now() / 1000 // time in seconds
+    
+    let dt = 1e16; // obtain change in time
+    if (typeof this.last_time != 'undefined') {
+      dt = now - this.last_time;
+    }
+
+    let d_feedback = feedback; // obtain change in feedback
+    if (typeof this.last_feedback != 'undefined') {
+      d_feedback = feedback - this.last_feedback;
+    }
+
+    let error = this.setpoint - feedback; // compute pid terms
+    this.p = this.kp * error;
+    this.i += this.ki * error*dt;
+    this.i = this.clamp(this.i); // avoid integral windup
+    this.d = -this.kd * d_feedback / dt;
+    
+    let output = this.p + this.i + this.d;
+    output = this.clamp(output)
+    // console.log(this.p, this.i, this.d);
+
+    this.last_feedback = feedback; // record states for next update
+    this.last_time = now;
+
+    return output;
+  }
+}
+
 class CanvasVideo extends Component {
   constructor(props) {
     //tf.enableProdMode();
@@ -45,7 +109,16 @@ class CanvasVideo extends Component {
       preprocess_mean: mean,
       preprocess_std: std,
       model_height: 513,
-      model_width: 513
+      model_width: 513,
+    };
+
+    this.controller_state = {
+      pers_poly: [7.938e-05, -0.002267, 0.5619, -0.02184],
+      steer_max: 880,
+      steer_mid: 445,
+      steer_min: 10,
+      step_per_degree: 10,
+      pid: new pid(0.85, 0.0, 0.4, 0.0, 44.0, -44.0)
     };
   }
 
@@ -146,6 +219,31 @@ class CanvasVideo extends Component {
 
     return coords;
   };
+
+  controller_module_steer = (bearing) => {
+    
+    console.log('Initial steer: ', bearing);
+    
+    // experimentally attained estimation to map image bearing to real life bearing
+    let real_bearing = 0;
+    let poly_deg = this.controller_state.pers_poly.length - 1
+
+    for (const poly_coef of this.controller_state.pers_poly){
+      real_bearing += poly_coef * bearing**poly_deg;
+      poly_deg -= 1;
+    }
+    // console.log('After pers transform: ', real_bearing);
+    
+    let tar_steer = this.controller_state.pid.update(-real_bearing);
+    console.log('After pid: ', tar_steer);
+
+    // mapping zero to middle and clip
+    tar_steer = this.controller_state.steer_mid + tar_steer * this.controller_state.step_per_degree
+    tar_steer = Math.min(tar_steer, this.controller_state.steer_max)
+    tar_steer = Math.max(tar_steer, this.controller_state.steer_min)
+
+    return tar_steer;
+  }
 
   componentWillMount() {
     this.virtualVideoElement = this.makeVirtualVideoElement();
@@ -252,7 +350,9 @@ class CanvasVideo extends Component {
     if (coords.reduce((a, b) => a + b, 0) !== 1) {  // check if no waypoints are found (not enough ridable area)
       this.draw_waypoints(coords, context);
       this.draw_bestfit(grad, context);
-      console.log('Suggested steer (degs to vertical): ', -Math.atan(grad) * 180 / Math.PI);
+      let steer = -Math.atan(grad) * 180 / Math.PI;
+      steer = this.controller_module_steer(steer);
+      console.log('Suggested steer value: ', steer);
     } else {
       console.log('No waypoints detected. No steer output.')
     }
