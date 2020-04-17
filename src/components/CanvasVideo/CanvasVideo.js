@@ -21,12 +21,12 @@ class pid {
     this.upper_limit = upper_limit;
     this.lower_limit = lower_limit;
     
-    this.p = 0.0;
-    this.i = 0.0;
-    this.d = 0.0;
+    this._reset();
+
+    this.auto_mode = true;
   }
 
-  clamp = (value) => {
+  _clamp = (value) => {
     if (this.upper_limit != null && value > this.upper_limit) {
       return this.upper_limit;
     }
@@ -36,34 +36,66 @@ class pid {
     return value;
   }
 
+  _reset = () => {
+    this.p = 0.0;
+    this.i = 0.0;
+    this.d = 0.0;
+
+    this.last_time = Date.now() / 1000;
+    this.last_output = null;
+    this.last_feedback = null;
+  }
+
   update = (feedback) => {
     
+    if (!this.auto_mode){
+      if (this.last_output == null){
+        console.log("PID has not done its first iteration. Toggle auto_mode before first update.");
+      }
+      return this.last_output;
+    }
+
     let now = Date.now() / 1000 // time in seconds
     
     let dt = 1e16; // obtain change in time
-    if (typeof this.last_time != 'undefined') {
+    if (this.last_time != null) {
       dt = now - this.last_time;
     }
 
     let d_feedback = feedback; // obtain change in feedback
-    if (typeof this.last_feedback != 'undefined') {
+    if (this.last_feedback != null) {
       d_feedback = feedback - this.last_feedback;
     }
 
     let error = this.setpoint - feedback; // compute pid terms
     this.p = this.kp * error;
     this.i += this.ki * error*dt;
-    this.i = this.clamp(this.i); // avoid integral windup
+    this.i = this._clamp(this.i); // avoid integral windup
     this.d = -this.kd * d_feedback / dt;
     
     let output = this.p + this.i + this.d;
-    output = this.clamp(output)
+    output = this._clamp(output)
     // console.log(this.p, this.i, this.d);
 
     this.last_feedback = feedback; // record states for next update
     this.last_time = now;
+    this.last_output = output;
 
     return output;
+  }
+
+  toggle_auto_mode = () => {
+    if (!this.auto_mode) { // from manual to auto requires reset of parameters
+      this._reset();
+      if (this.last_output != null) {
+        this.i = this.last_output;
+      } else {
+        this.i = 0.0;
+      }
+      this.i = this._clamp(this.i);
+    }
+
+    this.auto_mode = !this.auto_mode;
   }
 }
 
@@ -352,7 +384,7 @@ class CanvasVideo extends Component {
       this.draw_bestfit(grad, context);
       let steer = -Math.atan(grad) * 180 / Math.PI;
       steer = this.controller_module_steer(steer);
-      console.log('Suggested steer value: ', steer);
+      console.log('Final steer value: ', steer);
     } else {
       console.log('No waypoints detected. No steer output.')
     }
