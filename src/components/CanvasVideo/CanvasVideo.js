@@ -43,7 +43,9 @@ class CanvasVideo extends Component {
       min_ridable_area: 0.1,
       n_slices: 20,
       preprocess_mean: mean,
-      preprocess_std: std
+      preprocess_std: std,
+      model_height: 513,
+      model_width: 513
     };
   }
 
@@ -54,6 +56,8 @@ class CanvasVideo extends Component {
     var crop_height = bottom_crop - top_crop;
 
     this.frame_constants = {
+      height      : height,
+      width       : width,
       x_offset    : tf.scalar(width/2),
       y_offset    : tf.scalar(height - 1),
       top_crop    : top_crop,
@@ -84,7 +88,7 @@ class CanvasVideo extends Component {
 
     const mask = tf.tidy(() => {
       const resized = tfroadImage.asType('float32')
-                                // .resizeBilinear([513,513])
+                                .resizeBilinear([this.state.model_height, this.state.model_width])
                                 .reverse(-1);
       const processed = this.processImage(resized)
                             .expandDims();
@@ -104,12 +108,16 @@ class CanvasVideo extends Component {
     
     const coords = tf.tidy(() => {
       // Sets all non-pavement to 0
-      const slices = mask.mul(
-                            tf.equal(mask, tf.onesLike(mask))
-                          ).slice([this.frame_constants.top_crop, 0], [this.frame_constants.crop_height, this.props.options.width])
-                          .reshape([this.state.n_slices, 
+      const slices = mask.mul(tf.equal(mask, tf.onesLike(mask)))
+                          .slice(
+                            [this.frame_constants.top_crop, 0], 
+                            [this.frame_constants.crop_height, this.frame_constants.width]
+                          )
+                          .reshape(
+                            [this.state.n_slices, 
                             this.frame_constants.crop_height/this.state.n_slices, 
-                            this.props.options.width])
+                            this.frame_constants.width]
+                          )
 
       // Get waypoints
       const normalise = tf.sum(slices, [1,2]);
@@ -144,7 +152,7 @@ class CanvasVideo extends Component {
   }
 
   componentDidMount = async () => {
-    this.model = await tf.loadGraphModel(`http://127.0.0.1:81/scooter/model.json`);
+    this.model = await tf.loadGraphModel(`http://127.0.0.1:81/scooter_513/model.json`);
     this.setState({ loadingModel: false });
 
     this.startPlayingInCanvas(this.virtualVideoElement, this.canvasRef, {
@@ -167,7 +175,7 @@ class CanvasVideo extends Component {
   startPlayingInCanvas = (video, canvasRef, { ratio, autoplay }) => {
     canvasRef.width = this.props.options.width;
     canvasRef.height = this.props.options.height;
-    this.initialise_tf_constants(canvasRef.width, canvasRef.height);
+    this.initialise_tf_constants(this.state.model_height, this.state.model_width);  // deprecate when fixed frame size is being used
     this.playListener = () => {
       this.draw(video, canvasRef);
     };
@@ -188,6 +196,11 @@ class CanvasVideo extends Component {
   };
 
   draw_waypoints = (coords, context) => {
+    
+    // scaling required to map from model dims to canvas dims
+    const width_scale = this.props.options.width / this.state.model_width
+    const height_scale = this.props.options.height / this.state.model_height
+
     context.strokeStyle = '#ff0000';
 
     context.beginPath();
@@ -195,11 +208,17 @@ class CanvasVideo extends Component {
     while (coords[i] <= 1) {
       i++;
     }
-    context.moveTo(coords[i], coords[i+this.state.n_slices]);
+    context.moveTo(
+      coords[i] * width_scale, 
+      coords[i+this.state.n_slices] * height_scale
+    );
 
     while (i < this.state.n_slices - 1) {
       if (coords[i+1] > 1) {
-        context.lineTo(coords[i+1], coords[i+this.state.n_slices+1]);
+        context.lineTo(
+          coords[i+1] * width_scale,
+          coords[i+this.state.n_slices+1] * height_scale
+        );
       }
       i++;
     }
